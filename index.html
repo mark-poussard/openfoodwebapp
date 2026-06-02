@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Food Product Lookup</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- load sql.js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/sql-wasm.js"></script>
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-800 flex flex-col items-center p-4 sm:p-8">
+
+    <main class="w-full max-w-xl bg-white shadow-sm rounded-xl p-6 sm:p-8 mt-10 border border-slate-100 relative">
+        
+        <!-- Local Server Warning Alert (Protocol Blocker) -->
+        <div id="file-protocol-warning" class="hidden p-4 bg-amber-50 border border-amber-200 text-amber-900 rounded-lg text-sm space-y-2">
+            <p class="font-semibold">⚠️ Web Server Required</p>
+            <p>Browsers block database queries and local storage actions when pages are loaded directly via <code>file://</code>.</p>
+            <p class="text-xs text-amber-800 font-mono bg-amber-100/50 p-2 rounded">
+                Please run a local web server (e.g., Python or Node.js) inside this directory to use the application.
+            </p>
+        </div>
+
+        <!-- Section 1: Loading & Cache Checking State -->
+        <div id="cache-checking-container" class="py-12 flex flex-col items-center justify-center space-y-3">
+            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+            <p id="checking-status-text" class="text-sm text-slate-500">Checking database status...</p>
+        </div>
+
+        <!-- Section 2: Permission Prompt -->
+        <div id="permission-container" class="hidden space-y-5">
+            <div class="flex items-start gap-3">
+                <div class="p-2 bg-indigo-50 text-indigo-600 rounded-lg">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                </div>
+                <div>
+                    <h2 class="text-lg font-bold text-slate-900">Download Permission Required</h2>
+                    <p class="text-sm text-slate-500 mt-1">
+                        To search products, the application needs to download <code>food.parquet</code> and both danger reference databases. Once downloaded, these will be indexed and saved locally in your browser cache.
+                    </p>
+                </div>
+            </div>
+
+            <div class="bg-slate-50 p-4 rounded-lg border border-slate-100 text-sm space-y-2">
+                <div class="flex justify-between">
+                    <span class="text-slate-500">Source files:</span>
+                    <span class="font-mono font-medium text-slate-700 text-xs">food.parquet, additive_danger[1,2].sqlite</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-slate-500">Estimated download size:</span>
+                    <span id="estimated-size" class="font-medium text-slate-700 font-mono text-xs">Calculating...</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-slate-500">Storage target:</span>
+                    <span class="font-medium text-slate-700">Browser Cache Storage (SQLite)</span>
+                </div>
+            </div>
+
+            <button 
+                type="button" 
+                id="download-btn"
+                class="w-full inline-flex justify-center items-center rounded-lg bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-all"
+            >
+                Allow & Download Databases
+            </button>
+        </div>
+
+        <!-- Section 3: Downloading Progress -->
+        <div id="download-progress-container" class="hidden space-y-4 py-6">
+            <div class="flex justify-between items-center">
+                <span id="download-status-text" class="text-sm font-medium text-slate-700">Downloading database file...</span>
+                <span id="download-progress-text" class="text-xs font-semibold text-indigo-600 font-mono">0%</span>
+            </div>
+            
+            <!-- Progress Bar -->
+            <div class="w-full bg-slate-100 rounded-full h-2">
+                <div id="download-progress-bar" class="bg-indigo-600 h-2 rounded-full transition-all duration-100" style="width: 0%"></div>
+            </div>
+
+            <div class="flex justify-between text-xs text-slate-400">
+                <span id="download-progress-bytes">0 MB / 0 MB</span>
+                <span>Do not close this tab</span>
+            </div>
+        </div>
+
+        <!-- Section 4: Database Compilation Status -->
+        <div id="conversion-container" class="hidden py-8 flex flex-col items-center justify-center space-y-4">
+            <div class="animate-bounce p-3 bg-indigo-50 text-indigo-600 rounded-full">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+                </svg>
+            </div>
+            <div class="text-center">
+                <h3 class="text-sm font-semibold text-slate-900">Processing Databases</h3>
+                <p id="conversion-status-text" class="text-xs text-slate-500 mt-1">Generating high-speed SQLite database from Parquet...</p>
+            </div>
+        </div>
+
+        <!-- Section 5: Search Interface -->
+        <div id="search-container" class="hidden space-y-6">
+            <div>
+                <h1 class="text-2xl font-bold text-slate-900 mb-2">Food Database Lookup</h1>
+                <p class="text-sm text-slate-500">Query your local database instantly using SQLite.</p>
+            </div>
+
+            <!-- Search Form -->
+            <form id="search-form" class="space-y-4">
+                <div>
+                    <label for="code-input" class="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">
+                        Product Code (13 Digits)
+                    </label>
+                    <div class="flex gap-2">
+                        <input 
+                            type="text" 
+                            id="code-input" 
+                            placeholder="e.g., 3017620422003" 
+                            required
+                            class="flex-1 min-w-0 rounded-lg border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 shadow-sm outline-none transition-all"
+                        >
+                        <button 
+                            type="submit" 
+                            id="search-btn"
+                            class="inline-flex justify-center items-center rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white shadow hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-all"
+                        >
+                            Search
+                        </button>
+                    </div>
+                </div>
+            </form>
+
+            <!-- Status & Error Messages -->
+            <div id="status" class="mt-4 p-3 rounded-lg text-sm hidden"></div>
+
+            <!-- Result Card -->
+            <div id="result-card" class="hidden border-t border-slate-100 pt-6 space-y-5">
+                <h2 class="text-lg font-semibold text-slate-900">Product Details</h2>
+                
+                <!-- Additive Danger Rating Dashboard -->
+                <div id="res-score-panel" class="p-4 rounded-lg flex items-center justify-between border transition-colors">
+                    <div>
+                        <span class="block text-xs font-semibold uppercase tracking-wider opacity-70">Additives Health Score</span>
+                        <span id="res-score-text" class="text-lg font-bold"></span>
+                    </div>
+                    <div id="res-score-badge" class="px-3 py-1.5 rounded-lg text-sm font-bold shadow-sm"></div>
+                </div>
+
+                <div class="space-y-4">
+                    <div>
+                        <span class="block text-xs font-semibold uppercase tracking-wider text-slate-400">Code</span>
+                        <span id="res-code" class="text-sm font-mono text-slate-900 font-semibold"></span>
+                    </div>
+
+                    <div>
+                        <span class="block text-xs font-semibold uppercase tracking-wider text-slate-400">Product Name</span>
+                        <span id="res-name" class="text-sm text-slate-900 font-medium"></span>
+                    </div>
+
+                    <div>
+                        <span class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Additives & Danger Levels</span>
+                        <div id="res-additives" class="flex flex-wrap gap-1.5"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer Cache Info & Refetch Button -->
+            <div class="border-t border-slate-100 pt-4 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between text-xs text-slate-400">
+                <div class="flex items-center gap-1.5">
+                    <span class="h-2 w-2 rounded-full bg-emerald-500 inline-block animate-pulse"></span>
+                    <span>Database: Local SQLite (Offline-ready)</span>
+                </div>
+                <button 
+                    type="button" 
+                    id="refetch-btn" 
+                    class="text-indigo-600 hover:text-indigo-800 font-semibold hover:underline flex items-center gap-1"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 15H19" />
+                    </svg>
+                    Refetch & Rebuild Databases
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <footer class="mt-8 text-center text-xs text-slate-400">
+        Queries are executed locally inside your browser memory using <code>sql.js</code> WebAssembly.
+    </footer>
+
+    <!-- Script to manage application caching and lookup -->
+    <script type="module">
+        import { parquetReadObjects } from 'https://cdn.jsdelivr.net/npm/hyparquet/+esm';
+        import { compressors } from 'https://cdn.jsdelivr.net/npm/hyparquet-compressors/+esm';
+
+        // Constants
+        const CACHE_NAME = 'food-parquet-local-cache-v4';
+        const FILE_URL = new URL('food.parquet', window.location.href).href;
+        const SQLITE_URL = new URL('food.sqlite', window.location.href).href;
+        const DANGER_SQLITE_URL_1 = new URL('additive_danger.sqlite', window.location.href).href;
+        const DANGER_SQLITE_URL_2 = new URL('additive_danger_2.sqlite', window.location.href).href;
+
+        // SQL Engine and active database references
+        let SQL = null;
+        let activeDbInstance = null;
+        
+        // Local in-memory dictionaries for dual-source danger level references
+        const dangerMap1 = new Map();
+        const dangerMap2 = new Map();
+
+        // UI Containers
+        const fileProtocolWarning = document.getElementById('file-protocol-warning');
+        const cacheCheckingContainer = document.getElementById('cache-checking-container');
+        const permissionContainer = document.getElementById('permission-container');
+        const downloadProgressContainer = document.getElementById('download-progress-container');
+        const conversionContainer = document.getElementById('conversion-container');
+        const searchContainer = document.getElementById('search-container');
+
+        // Dynamic Text Indicators
+        const checkingStatusText = document.getElementById('checking-status-text');
+        const conversionStatusText = document.getElementById('conversion-status-text');
+        const downloadStatusText = document.getElementById('download-status-text');
+
+        // Buttons & Forms
+        const downloadBtn = document.getElementById('download-btn');
+        const refetchBtn = document.getElementById('refetch-btn');
+        const form = document.getElementById('search-form');
+        const input = document.getElementById('code-input');
+        const statusDiv = document.getElementById('status');
+        const resultCard = document.getElementById('result-card');
+        const searchBtn = document.getElementById('search-btn');
+
+        // Result Fields
+        const resCode = document.getElementById('res-code');
+        const resName = document.getElementById('res-name');
+        const resAdditives = document.getElementById('res-additives');
+
+        // Check if resource is already in Cache Storage
+        async function hasCachedResource(url) {
+            try {
+                if (!('caches' in window)) return false;
+                const cache = await caches.open(CACHE_NAME);
+                const response = await cache.match(url);
+                return !!response;
+            } catch (err) {
+                console.error('Cache query failed:', err);
+                return false;
+            }
+        }
+
+        async function getCachedResourceBuffer(url) {
+            try {
+                if (!('caches' in window)) return null;
+                const cache = await caches.open(CACHE_NAME);
+                const response = await cache.match(url);
+                return response ? await response.arrayBuffer() : null;
+            } catch (err) {
+                console.error(`Cache array buffer resolution failure for ${url}:`, err);
+                return null;
+            }
+        }
+
+        // Initialize sql.js WebAssembly
+        async function initSql() {
+            if (SQL) return SQL;
+            checkingStatusText.textContent = 'Initializing SQLite Engine...';
+            try {
+                SQL = await window.initSqlJs({
+                    locateFile: filename => `https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/${filename}`
+                });
+                return SQL;
+            } catch (err) {
+                console.error('Failed to initialize sql.js:', err);
+                throw new Error('SQLite Engine failed to initialize.');
+            }
+        }
+
+        // Initialize application workflow
+        async function init() {
+            if (window.location.protocol === 'file:') {
+                cacheCheckingContainer.classList.add('hidden');
+                fileProtocolWarning.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                const sqlInstance = await initSql();
+                
+                const hasSqlite = await hasCachedResource(SQLITE_URL);
+                const hasParquet = await hasCachedResource(FILE_URL);
+                const hasDanger1 = await hasCachedResource(DANGER_SQLITE_URL_1);
+                const hasDanger2 = await hasCachedResource(DANGER_SQLITE_URL_2);
+
+                // Check if all necessary SQLite files are cached
+                if (hasSqlite && hasDanger1 && hasDanger2) {
+                    checkingStatusText.textContent = 'Loading local database into memory...';
+                    
+                    const sqliteBuffer = await getCachedResourceBuffer(SQLITE_URL);
+                    setDatabaseInstance(new sqlInstance.Database(new Uint8Array(sqliteBuffer)));
+                    
+                    await loadDangerLevelsToMemory(sqlInstance);
+                    showSearchInterface();
+                    return;
+                }
+
+                // If Parquet is present but compiled SQLite is missing, convert Parquet to SQLite
+                if (hasParquet && hasDanger1 && hasDanger2) {
+                    await buildSqliteFromParquet(await getCachedResourceBuffer(FILE_URL));
+                    await loadDangerLevelsToMemory(sqlInstance);
+                    showSearchInterface();
+                    return;
+                }
+
+                // Show download permission prompt if any database resource is missing
+                await showPermissionPrompt();
+            } catch (err) {
+                checkingStatusText.textContent = `Initialization failed: ${err.message}`;
+            }
+        }
+
+        // Closes old SQLite instances before re-assignment
+        function setDatabaseInstance(newDb) {
+            if (activeDbInstance) {
+                try { activeDbInstance.close(); } catch (e) {}
+            }
+            activeDbInstance = newDb;
+        }
+
+        // Read danger definitions from both SQLite databases sequentially, releasing database references to keep memory use low
+        async function loadDangerLevelsToMemory(sqlInstance) {
+            dangerMap1.clear();
+            dangerMap2.clear();
+
+            // Load Database Source 1
+            const dangerBuffer1 = await getCachedResourceBuffer(DANGER_SQLITE_URL_1);
+            if (!dangerBuffer1) throw new Error('Additive danger database 1 could not be loaded.');
+            const db1 = new sqlInstance.Database(new Uint8Array(dangerBuffer1));
+            const stmt1 = db1.prepare("SELECT tag, danger_level FROM additive_danger");
+            while (stmt1.step()) {
+                const row = stmt1.getAsObject();
+                dangerMap1.set(row.tag, row.danger_level);
+            }
+            stmt1.free();
+            db1.close();
+
+            // Load Database Source 2
+            const dangerBuffer2 = await getCachedResourceBuffer(DANGER_SQLITE_URL_2);
+            if (!dangerBuffer2) throw new Error('Additive danger database 2 could not be loaded.');
+            const db2 = new sqlInstance.Database(new Uint8Array(dangerBuffer2));
+            const stmt2 = db2.prepare("SELECT tag, danger_level FROM additive_danger");
+            while (stmt2.step()) {
+                const row = stmt2.getAsObject();
+                dangerMap2.set(row.tag, row.danger_level);
+            }
+            stmt2.free();
+            db2.close();
+        }
+
+        // Build main SQLite database using Parquet structures
+        async function buildSqliteFromParquet(parquetBuffer) {
+            cacheCheckingContainer.classList.add('hidden');
+            permissionContainer.classList.add('hidden');
+            downloadProgressContainer.classList.add('hidden');
+            conversionContainer.classList.remove('hidden');
+
+            try {
+                const sqlInstance = await initSql();
+                conversionStatusText.textContent = 'Reading rows from Parquet...';
+
+                const columns = ['code', 'product_name', 'additives_tags'];
+                const dataset = await parquetReadObjects({ file: parquetBuffer, columns, compressors });
+
+                conversionStatusText.textContent = `Structuring database index...`;
+                const db = new sqlInstance.Database();
+                
+                db.run(`
+                    CREATE TABLE products (
+                        code TEXT PRIMARY KEY,
+                        product_name TEXT,
+                        additives_tags TEXT
+                    );
+                `);
+
+                conversionStatusText.textContent = `Populating ${dataset.length} food items...`;
+
+                db.run("BEGIN TRANSACTION;");
+                const stmt = db.prepare("INSERT OR REPLACE INTO products (code, product_name, additives_tags) VALUES (?, ?, ?)");
+                
+                for (let i = 0; i < dataset.length; i++) {
+                    const row = dataset[i];
+                    const codeStr = normalizeValueToString(row.code);
+                    const nameStr = row.product_name || '';
+                    
+                    let additivesStr = '';
+                    if (Array.isArray(row.additives_tags)) {
+                        additivesStr = JSON.stringify(row.additives_tags);
+                    } else if (typeof row.additives_tags === 'string') {
+                        additivesStr = row.additives_tags;
+                    }
+                    
+                    stmt.run([codeStr, nameStr, additivesStr]);
+                }
+                stmt.free();
+                db.run("COMMIT;");
+
+                conversionStatusText.textContent = 'Optimizing indexes...';
+                const dbExport = db.export();
+
+                if ('caches' in window) {
+                    const cache = await caches.open(CACHE_NAME);
+                    const responseToCache = new Response(dbExport, {
+                        headers: {
+                            'Content-Type': 'application/x-sqlite3',
+                            'Content-Length': dbExport.byteLength.toString()
+                        }
+                    });
+                    await cache.put(SQLITE_URL, responseToCache);
+                }
+
+                setDatabaseInstance(db);
+                conversionContainer.classList.add('hidden');
+            } catch (err) {
+                console.error(err);
+                alert(`SQLite building failed: ${err.message}`);
+                conversionContainer.classList.add('hidden');
+                await showPermissionPrompt();
+                throw err;
+            }
+        }
+
+        // Find file byte length relative to server setup
+        async function fetchFileByteLength(url) {
+            try {
+                const headRes = await fetch(url, { method: 'HEAD' });
+                if (headRes.ok) {
+                    const len = headRes.headers.get('content-length');
+                    if (len) return parseInt(len, 10);
+                }
+            } catch (err) {
+                console.warn('HEAD check failed, attempting HTTP Range fallback:', err);
+            }
+
+            const rangeRes = await fetch(url, { headers: { 'Range': 'bytes=0-0' } });
+            if (!rangeRes.ok && rangeRes.status !== 206) {
+                throw new Error(`Server returned status ${rangeRes.status} querying metadata.`);
+            }
+
+            const contentRange = rangeRes.headers.get('content-range');
+            if (contentRange) {
+                const parts = contentRange.split('/');
+                if (parts.length > 1) {
+                    const len = parseInt(parts[1], 10);
+                    if (!isNaN(len)) return len;
+                }
+            }
+
+            const len = rangeRes.headers.get('content-length');
+            if (len) return parseInt(len, 10);
+
+            return null;
+        }
+
+        // Render download approval box showing cumulative size estimation
+        async function showPermissionPrompt() {
+            cacheCheckingContainer.classList.add('hidden');
+            searchContainer.classList.add('hidden');
+            permissionContainer.classList.remove('hidden');
+
+            const estSizeEl = document.getElementById('estimated-size');
+            try {
+                const parquetBytes = await fetchFileByteLength(FILE_URL) || 0;
+                const sqliteBytes1 = await fetchFileByteLength(DANGER_SQLITE_URL_1) || 0;
+                const sqliteBytes2 = await fetchFileByteLength(DANGER_SQLITE_URL_2) || 0;
+                const totalBytes = parquetBytes + sqliteBytes1 + sqliteBytes2;
+
+                if (totalBytes > 0) {
+                    estSizeEl.textContent = `${formatBytes(totalBytes)} (Parquet: ${formatBytes(parquetBytes)}, Database 1: ${formatBytes(sqliteBytes1)}, Database 2: ${formatBytes(sqliteBytes2)})`;
+                } else {
+                    estSizeEl.textContent = 'Unknown';
+                }
+            } catch (err) {
+                estSizeEl.textContent = 'Error contacting local server metadata';
+                console.error(err);
+            }
+        }
+
+        // Unified streamer to fetch and save a file to local Cache Storage
+        async function downloadAndCacheFile(url, fileName, bypassNetworkCache = false) {
+            downloadStatusText.textContent = `Downloading ${fileName}...`;
+            updateDownloadProgress(0, 0, 0);
+
+            const totalBytes = await fetchFileByteLength(url);
+            const fetchUrl = bypassNetworkCache ? `${url}?nocache=${Date.now()}` : url;
+            const fetchOptions = bypassNetworkCache ? { cache: 'reload' } : {};
+
+            const response = await fetch(fetchUrl, fetchOptions);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status} fetching ${fileName}`);
+            }
+
+            let fileBuffer;
+
+            if (response.body) {
+                const reader = response.body.getReader();
+                const chunks = [];
+                let receivedLength = 0;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    chunks.push(value);
+                    receivedLength += value.length;
+                    
+                    if (totalBytes) {
+                        const percent = Math.round((receivedLength / totalBytes) * 100);
+                        updateDownloadProgress(percent, receivedLength, totalBytes);
+                    } else {
+                        updateDownloadProgress(null, receivedLength, null);
+                    }
+                }
+
+                const blob = new Blob(chunks);
+                fileBuffer = await blob.arrayBuffer();
+            } else {
+                fileBuffer = await response.arrayBuffer();
+            }
+
+            if ('caches' in window) {
+                const cache = await caches.open(CACHE_NAME);
+                const responseToCache = new Response(fileBuffer, {
+                    headers: {
+                        'Content-Type': 'application/octet-stream',
+                        'Content-Length': fileBuffer.byteLength.toString()
+                    }
+                });
+                await cache.put(url, responseToCache);
+            }
+
+            return fileBuffer;
+        }
+
+        // Download missing database resources, then proceed with WebAssembly memory setup
+        async function performDownloadAndCache(bypassNetworkCache = false) {
+            permissionContainer.classList.add('hidden');
+            searchContainer.classList.add('hidden');
+            downloadProgressContainer.classList.remove('hidden');
+
+            try {
+                const hasParquet = await hasCachedResource(FILE_URL);
+                const hasDanger1 = await hasCachedResource(DANGER_SQLITE_URL_1);
+                const hasDanger2 = await hasCachedResource(DANGER_SQLITE_URL_2);
+
+                let parquetBuffer;
+
+                if (!hasParquet || bypassNetworkCache) {
+                    parquetBuffer = await downloadAndCacheFile(FILE_URL, 'food.parquet', bypassNetworkCache);
+                } else {
+                    parquetBuffer = await getCachedResourceBuffer(FILE_URL);
+                }
+
+                if (!hasDanger1 || bypassNetworkCache) {
+                    await downloadAndCacheFile(DANGER_SQLITE_URL_1, 'additive_danger.sqlite', bypassNetworkCache);
+                }
+
+                if (!hasDanger2 || bypassNetworkCache) {
+                    await downloadAndCacheFile(DANGER_SQLITE_URL_2, 'additive_danger_2.sqlite', bypassNetworkCache);
+                }
+
+                // Compile SQLite dataset
+                await buildSqliteFromParquet(parquetBuffer);
+
+                // Load danger definitions to local memory
+                const sqlInstance = await initSql();
+                await loadDangerLevelsToMemory(sqlInstance);
+
+                downloadProgressContainer.classList.add('hidden');
+                showSearchInterface();
+            } catch (err) {
+                console.error(err);
+                alert(`Failed to cache database: ${err.message}`);
+                downloadProgressContainer.classList.add('hidden');
+                await showPermissionPrompt();
+            }
+        }
+
+        function showSearchInterface() {
+            cacheCheckingContainer.classList.add('hidden');
+            permissionContainer.classList.add('hidden');
+            searchContainer.classList.remove('hidden');
+        }
+
+        function updateDownloadProgress(percent, loaded, total) {
+            const bar = document.getElementById('download-progress-bar');
+            const text = document.getElementById('download-progress-text');
+            const bytesText = document.getElementById('download-progress-bytes');
+
+            if (percent !== null) {
+                bar.style.width = `${percent}%`;
+                text.textContent = `${percent}%`;
+            } else {
+                bar.style.width = '100%';
+                text.textContent = 'Loading...';
+            }
+
+            if (total) {
+                bytesText.textContent = `${formatBytes(loaded)} / ${formatBytes(total)}`;
+            } else {
+                bytesText.textContent = `${formatBytes(loaded)}`;
+            }
+        }
+
+        function setStatus(msg, type = 'info') {
+            statusDiv.textContent = msg;
+            statusDiv.classList.remove('hidden');
+            if (type === 'error') {
+                statusDiv.className = 'mt-4 p-3 rounded-lg text-sm bg-red-50 text-red-700 border border-red-100';
+            } else {
+                statusDiv.className = 'mt-4 p-3 rounded-lg text-sm bg-slate-50 text-slate-600 border border-slate-100';
+            }
+        }
+
+        function hideStatus() {
+            statusDiv.classList.add('hidden');
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function normalizeValueToString(val) {
+            if (val === undefined || val === null) return '';
+            if (typeof val === 'bigint') {
+                return val.toString();
+            }
+            if (typeof val === 'number') {
+                return val.toFixed(0); 
+            }
+            return String(val).trim();
+        }
+
+        // UI Listeners
+        downloadBtn.addEventListener('click', () => performDownloadAndCache(false));
+        
+        refetchBtn.addEventListener('click', () => {
+            if (confirm('Re-download food.parquet and both danger index SQLite databases from the server? This will reset your local database caches.')) {
+                setDatabaseInstance(null);
+                performDownloadAndCache(true);
+            }
+        });
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const queryCode = input.value.replace(/[\s-]/g, '');
+
+            if (queryCode.length !== 13 || isNaN(queryCode)) {
+                setStatus('Please enter a valid 13-digit numeric code.', 'error');
+                return;
+            }
+
+            resultCard.classList.add('hidden');
+            searchBtn.disabled = true;
+            searchBtn.textContent = 'Searching...';
+
+            try {
+                if (!activeDbInstance) {
+                    throw new Error('Database is not initialized.');
+                }
+
+                setStatus('Querying SQLite database locally...');
+                
+                const stmt = activeDbInstance.prepare("SELECT product_name, additives_tags FROM products WHERE code = ? LIMIT 1");
+                stmt.bind([queryCode]);
+
+                let found = false;
+                if (stmt.step()) {
+                    const row = stmt.getAsObject();
+                    found = true;
+                    hideStatus();
+
+                    resCode.textContent = queryCode;
+                    resName.textContent = row.product_name || 'Unnamed Product';
+                    
+                    resAdditives.innerHTML = '';
+                    
+                    let tags = [];
+                    if (row.additives_tags) {
+                        try {
+                            const parsed = JSON.parse(row.additives_tags);
+                            if (Array.isArray(parsed)) tags = parsed;
+                        } catch {
+                            tags = row.additives_tags.split(',').map(t => t.trim()).filter(Boolean);
+                        }
+                    }
+
+                    let maxDanger = 0;
+                    let hasUnknown = false;
+
+                    const getLevelText = (l) => {
+                        if (l === 1) return 'Ok';
+                        if (l === 2) return 'Vig.';
+                        if (l === 3) return 'Not Rec.';
+                        if (l === 4) return 'Avoid';
+                        return '?';
+                    };
+
+                    const getBadgeClass = (l) => {
+                        if (l === 1) return 'bg-green-50 text-green-800 border-green-200/60';
+                        if (l === 2) return 'bg-yellow-50 text-yellow-800 border-yellow-200/60';
+                        if (l === 3) return 'bg-orange-50 text-orange-800 border-orange-200/60';
+                        if (l === 4) return 'bg-red-50 text-red-800 border-red-200/60';
+                        return 'bg-purple-50 text-purple-800 border-purple-200/60';
+                    };
+
+                    if (tags.length > 0) {
+                        tags.forEach(tag => {
+                            // Extract ratings from both sources
+                            const rawLevel1 = dangerMap1.get(tag);
+                            const rawLevel2 = dangerMap2.get(tag);
+                            
+                            const level1 = (rawLevel1 !== undefined && rawLevel1 !== null) ? Number(rawLevel1) : null;
+                            const level2 = (rawLevel2 !== undefined && rawLevel2 !== null) ? Number(rawLevel2) : null;
+                            
+                            // Map values to strings for display
+                            const text1 = getLevelText(level1);
+                            const text2 = getLevelText(level2);
+
+                            // Combined level represents the highest known score. If both are unindexed, it resolves to null.
+                            const combinedLevel = (level1 !== null || level2 !== null) ? Math.max(level1 || 0, level2 || 0) : null;
+
+                            let chipClass = '';
+                            if (combinedLevel === null) {
+                                hasUnknown = true;
+                                chipClass = getBadgeClass(null);
+                            } else {
+                                chipClass = getBadgeClass(combinedLevel);
+                                maxDanger = Math.max(maxDanger, combinedLevel);
+                            }
+
+                            const chip = document.createElement('span');
+                            chip.className = `inline-flex items-center px-2 py-1 rounded text-xs font-semibold border ${chipClass}`;
+                            chip.textContent = `${tag} [S1: ${text1} | S2: ${text2}]`;
+                            resAdditives.appendChild(chip);
+                        });
+                    } else {
+                        const noAdditives = document.createElement('span');
+                        noAdditives.className = 'text-sm text-slate-400 italic';
+                        noAdditives.textContent = 'None detected';
+                        resAdditives.appendChild(noAdditives);
+                    }
+
+                    // Update safety rating dashboard
+                    const scorePanel = document.getElementById('res-score-panel');
+                    const scoreText = document.getElementById('res-score-text');
+                    const scoreBadge = document.getElementById('res-score-badge');
+
+                    if (tags.length === 0) {
+                        scorePanel.className = 'p-4 rounded-lg flex items-center justify-between bg-emerald-50 text-emerald-950 border border-emerald-100';
+                        scoreText.textContent = 'Excellent';
+                        scoreBadge.textContent = 'No Additives';
+                        scoreBadge.className = 'bg-emerald-500 text-white px-3 py-1.5 rounded-lg text-sm font-bold shadow-sm';
+                    } else if (hasUnknown) {
+                        scorePanel.className = 'p-4 rounded-lg flex items-center justify-between bg-purple-50 text-purple-950 border border-purple-100';
+                        scoreText.textContent = 'Uncertain Score';
+                        scoreBadge.textContent = 'Unknown Additives (?)';
+                        scoreBadge.className = 'bg-purple-500 text-white px-3 py-1.5 rounded-lg text-sm font-bold shadow-sm';
+                    } else {
+                        if (maxDanger === 1) {
+                            scorePanel.className = 'p-4 rounded-lg flex items-center justify-between bg-green-50 text-green-950 border border-green-100';
+                            scoreText.textContent = 'Low Risk';
+                            scoreBadge.textContent = 'Ok (Level 1)';
+                            scoreBadge.className = 'bg-green-500 text-white px-3 py-1.5 rounded-lg text-sm font-bold shadow-sm';
+                        } else if (maxDanger === 2) {
+                            scorePanel.className = 'p-4 rounded-lg flex items-center justify-between bg-yellow-50 text-yellow-950 border border-yellow-100';
+                            scoreText.textContent = 'Moderate Risk';
+                            scoreBadge.textContent = 'Vigilance (Level 2)';
+                            scoreBadge.className = 'bg-yellow-500 text-amber-950 px-3 py-1.5 rounded-lg text-sm font-bold shadow-sm';
+                        } else if (maxDanger === 3) {
+                            scorePanel.className = 'p-4 rounded-lg flex items-center justify-between bg-orange-50 text-orange-950 border border-orange-100';
+                            scoreText.textContent = 'High Risk';
+                            scoreBadge.textContent = 'Not Recommended (Level 3)';
+                            scoreBadge.className = 'bg-orange-500 text-white px-3 py-1.5 rounded-lg text-sm font-bold shadow-sm';
+                        } else if (maxDanger === 4) {
+                            scorePanel.className = 'p-4 rounded-lg flex items-center justify-between bg-red-50 text-red-950 border border-red-100';
+                            scoreText.textContent = 'Hazardous';
+                            scoreBadge.textContent = 'Avoid (Level 4)';
+                            scoreBadge.className = 'bg-red-500 text-white px-3 py-1.5 rounded-lg text-sm font-bold shadow-sm';
+                        }
+                    }
+
+                    resultCard.classList.remove('hidden');
+                }
+                
+                stmt.free();
+
+                if (!found) {
+                    setStatus(`No product found with code: ${queryCode}`, 'error');
+                }
+            } catch (err) {
+                console.error(err);
+                setStatus(`Query failed: ${err.message}`, 'error');
+            } finally {
+                searchBtn.disabled = false;
+                searchBtn.textContent = 'Search';
+            }
+        });
+
+        // Run checking sequence
+        init();
+    </script>
+</body>
+</html>
