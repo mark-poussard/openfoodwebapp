@@ -191,7 +191,7 @@
 
     <!-- Script to manage application caching and lookup -->
     <script type="module">
-        import { parquetReadObjects } from 'https://cdn.jsdelivr.net/npm/hyparquet/+esm';
+        import { parquetRead, parquetMetadata } from 'https://cdn.jsdelivr.net/npm/hyparquet/+esm';
         import { compressors } from 'https://cdn.jsdelivr.net/npm/hyparquet-compressors/+esm';
 
         // Constants
@@ -276,7 +276,7 @@
             }
         }
 
-        // Initialize application workflow
+        // Initialize the app states
         async function init() {
             if (window.location.protocol === 'file:') {
                 cacheCheckingContainer.classList.add('hidden');
@@ -292,7 +292,7 @@
                 const hasDanger1 = await hasCachedResource(DANGER_SQLITE_URL_1);
                 const hasDanger2 = await hasCachedResource(DANGER_SQLITE_URL_2);
 
-                // Check if all necessary SQLite files are cached
+                // If SQLite is already prepared and we have danger definitions, load both directly
                 if (hasSqlite && hasDanger1 && hasDanger2) {
                     checkingStatusText.textContent = 'Loading local database into memory...';
                     
@@ -304,7 +304,7 @@
                     return;
                 }
 
-                // If Parquet is present but compiled SQLite is missing, convert Parquet to SQLite
+                // If raw Parquet is cached but SQLite is missing (and we have danger definitions)
                 if (hasParquet && hasDanger1 && hasDanger2) {
                     await buildSqliteFromParquet(await getCachedResourceBuffer(FILE_URL));
                     await loadDangerLevelsToMemory(sqlInstance);
@@ -366,10 +366,11 @@
 
             try {
                 const sqlInstance = await initSql();
-                conversionStatusText.textContent = 'Reading rows from Parquet...';
+                conversionStatusText.textContent = 'Reading Parquet metadata...';
 
-                const columns = ['code', 'product_name', 'additives_tags'];
-                const dataset = await parquetReadObjects({ file: parquetBuffer, columns, compressors });
+                // Extract metadata synchronously from the buffer to determine row count
+                const metadata = parquetMetadata(parquetBuffer);
+                const numRows = Number(metadata.num_rows || 0);
 
                 conversionStatusText.textContent = `Structuring database index...`;
                 const db = new sqlInstance.Database();
@@ -382,29 +383,50 @@
                     );
                 `);
 
-                conversionStatusText.textContent = `Populating ${dataset.length} food items...`;
+                // To prevent OOM and CPU freezing on iOS WebKit, we process data in small chunks.
+                // Each chunk is committed in a micro-transaction, keeping main-thread pauses minimal.
+                const BATCH_SIZE = 50000;
 
-                db.run("BEGIN TRANSACTION;");
-                const stmt = db.prepare("INSERT OR REPLACE INTO products (code, product_name, additives_tags) VALUES (?, ?, ?)");
-                
-                for (let i = 0; i < dataset.length; i++) {
-                    const row = dataset[i];
-                    const codeStr = normalizeValueToString(row.code);
-                    const nameStr = row.product_name || '';
+                for (let rowStart = 0; rowStart < numRows; rowStart += BATCH_SIZE) {
+                    const rowEnd = Math.min(rowStart + BATCH_SIZE, numRows);
                     
-                    let additivesStr = '';
-                    if (Array.isArray(row.additives_tags)) {
-                        additivesStr = JSON.stringify(row.additives_tags);
-                    } else if (typeof row.additives_tags === 'string') {
-                        additivesStr = row.additives_tags;
-                    }
-                    
-                    stmt.run([codeStr, nameStr, additivesStr]);
+                    conversionStatusText.textContent = `Indexing items ${rowStart} to ${rowEnd} of ${numRows}...`;
+
+                    db.run("BEGIN TRANSACTION;");
+                    const stmt = db.prepare("INSERT OR REPLACE INTO products (code, product_name, additives_tags) VALUES (?, ?, ?)");
+
+                    await parquetRead({
+                        file: parquetBuffer,
+                        columns: ['code', 'product_name', 'additives_tags'],
+                        rowStart,
+                        rowEnd,
+                        rowFormat: 'object',
+                        compressors,
+                        onComplete: (batchRows) => {
+                            for (const row of batchRows) {
+                                const codeStr = normalizeValueToString(row.code);
+                                const nameStr = row.product_name || '';
+                                
+                                let additivesStr = '';
+                                if (Array.isArray(row.additives_tags)) {
+                                    additivesStr = JSON.stringify(row.additives_tags);
+                                } else if (typeof row.additives_tags === 'string') {
+                                    additivesStr = row.additives_tags;
+                                }
+                                
+                                stmt.run([codeStr, nameStr, additivesStr]);
+                            }
+                        }
+                    });
+
+                    stmt.free();
+                    db.run("COMMIT;");
+
+                    // Yield execution back to Safari to reset the watchdog timer and trigger garbage collection
+                    await new Promise(resolve => setTimeout(resolve, 20));
                 }
-                stmt.free();
-                db.run("COMMIT;");
 
-                conversionStatusText.textContent = 'Optimizing indexes...';
+                conversionStatusText.textContent = 'Saving database file...';
                 const dbExport = db.export();
 
                 if ('caches' in window) {
@@ -567,7 +589,7 @@
                     await downloadAndCacheFile(DANGER_SQLITE_URL_2, 'additive_danger_2.sqlite', bypassNetworkCache);
                 }
 
-                // Compile SQLite dataset
+                // Compile and generate SQLite main dataset
                 await buildSqliteFromParquet(parquetBuffer);
 
                 // Load danger definitions to local memory
@@ -647,7 +669,7 @@
         downloadBtn.addEventListener('click', () => performDownloadAndCache(false));
         
         refetchBtn.addEventListener('click', () => {
-            if (confirm('Re-download food.parquet and both danger index SQLite databases from the server? This will reset your local database caches.')) {
+            if (confirm('Re-download food.parquet and both danger index SQLite databases? This will reset your local database caches.')) {
                 setDatabaseInstance(null);
                 performDownloadAndCache(true);
             }
